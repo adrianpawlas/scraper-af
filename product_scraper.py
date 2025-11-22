@@ -48,7 +48,15 @@ class ProductScraper:
             await page.goto(category_url, wait_until="networkidle", timeout=config.BROWSER_TIMEOUT)
             await asyncio.sleep(2)  # Wait for dynamic content
             
-            # Get page content
+            # Wait for products to load - try waiting for specific elements
+            try:
+                # Wait for product grid or product cards to appear
+                await page.wait_for_selector('a[href*="/p/"]', timeout=10000)
+            except:
+                # If selector doesn't appear, wait a bit more for dynamic content
+                await asyncio.sleep(3)
+            
+            # Get page content after waiting
             content = await page.content()
             soup = BeautifulSoup(content, 'html.parser')
             
@@ -60,9 +68,12 @@ class ProductScraper:
             all_links = soup.find_all('a', href=True)
             for link in all_links:
                 href = link.get('href', '')
+                # Check for product URLs - they contain /p/ and product codes
                 if '/p/' in href and href not in product_links:
-                    full_url = urljoin(self.base_url, href)
-                    product_links.append(full_url)
+                    # Filter out non-product links
+                    if any(x in href.lower() for x in ['/p/', 'product', 'item']) and 'category' not in href.lower():
+                        full_url = urljoin(self.base_url, href)
+                        product_links.append(full_url)
             
             # Method 2: Look for data attributes that might contain product URLs
             product_elements = soup.find_all(attrs={'data-product-url': True})
@@ -73,13 +84,27 @@ class ProductScraper:
                     if full_url not in product_links:
                         product_links.append(full_url)
             
+            # Method 3: Try to find product links via JavaScript evaluation
+            try:
+                js_product_urls = await page.evaluate("""
+                    () => {
+                        const links = Array.from(document.querySelectorAll('a[href*="/p/"]'));
+                        return links.map(link => link.href).filter(href => href && href.includes('/p/'));
+                    }
+                """)
+                for url in js_product_urls:
+                    if url and '/p/' in url and url not in product_links:
+                        product_links.append(url)
+            except Exception as e:
+                logger.debug(f"JavaScript extraction failed: {e}")
+            
             # Remove duplicates and clean URLs
             seen = set()
             for url in product_links:
                 # Remove query parameters for consistency
                 parsed = urlparse(url)
                 clean_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
-                if clean_url not in seen:
+                if clean_url not in seen and '/p/' in clean_url:
                     seen.add(clean_url)
                     product_urls.append(clean_url)
             
