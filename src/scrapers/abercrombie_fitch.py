@@ -78,14 +78,41 @@ class AbercrombieFitchScraper:
                 '--no-first-run',
                 '--no-zygote',
                 '--single-process',
-                '--disable-gpu'
+                '--disable-gpu',
+                '--disable-blink-features=AutomationControlled'  # Hide automation
             ]
         )
 
+        # More realistic browser context
         self.context = await self.browser.new_context(
-            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            viewport={'width': 1920, 'height': 1080}
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+            viewport={'width': 1920, 'height': 1080},
+            locale='en-US',
+            timezone_id='America/New_York',
+            permissions=['geolocation'],
+            extra_http_headers={
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'DNT': '1',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+            }
         )
+        
+        # Hide webdriver property
+        await self.context.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => undefined
+            });
+        """)
+        
+        # Accept cookies/consent if present
+        async def handle_dialog(dialog):
+            logger.info(f"Dismissing dialog: {dialog.message}")
+            await dialog.accept()
+        
+        self.context.on('dialog', handle_dialog)
 
         logger.info("Browser setup complete")
 
@@ -99,6 +126,63 @@ class AbercrombieFitchScraper:
 
         return page
 
+    async def _handle_cookie_consent(self, page: Page):
+        """Handle cookie consent banners"""
+        try:
+            # Wait a bit for consent banner to appear
+            await asyncio.sleep(2)
+            
+            # Common cookie consent selectors
+            consent_selectors = [
+                'button[id*="accept"]',
+                'button[class*="accept"]',
+                'button[data-testid*="accept"]',
+                'button:has-text("Accept")',
+                'button:has-text("I Accept")',
+                'button:has-text("Agree")',
+                'button:has-text("OK")',
+                '[id*="cookie"] button',
+                '[class*="cookie"] button',
+                '[data-testid*="cookie"] button',
+                '[id*="consent"] button',
+                '[class*="consent"] button',
+                'button[aria-label*="Accept"]',
+                'button[aria-label*="Agree"]'
+            ]
+            
+            for selector in consent_selectors:
+                try:
+                    button = await page.query_selector(selector)
+                    if button:
+                        is_visible = await button.is_visible()
+                        if is_visible:
+                            logger.info(f"Found cookie consent button: {selector}")
+                            await button.click()
+                            await asyncio.sleep(2)
+                            return True
+                except Exception:
+                    continue
+            
+            # Try clicking by text content
+            try:
+                buttons = await page.query_selector_all('button')
+                for button in buttons:
+                    text = await button.text_content()
+                    if text and any(word in text.lower() for word in ['accept', 'agree', 'ok', 'continue']):
+                        is_visible = await button.is_visible()
+                        if is_visible:
+                            logger.info(f"Found cookie consent button by text: {text}")
+                            await button.click()
+                            await asyncio.sleep(2)
+                            return True
+            except Exception:
+                pass
+                
+        except Exception as e:
+            logger.debug(f"Error handling cookie consent: {e}")
+        
+        return False
+
     async def _extract_product_urls(self, page: Page) -> List[str]:
         """
         Extract product URLs from current page
@@ -110,83 +194,156 @@ class AbercrombieFitchScraper:
             List of product URLs
         """
         try:
-            # Wait for page to load
-            await page.wait_for_load_state('networkidle')
-            await asyncio.sleep(3)  # Give time for dynamic content
-
-            # Scroll to trigger lazy loading
-            await page.evaluate("""
-                window.scrollTo(0, document.body.scrollHeight / 2);
-            """)
-            await asyncio.sleep(2)
+            # Wait for page to load and handle cookie consent
+            await page.wait_for_load_state('domcontentloaded')
+            await self._handle_cookie_consent(page)
             
-            await page.evaluate("""
-                window.scrollTo(0, document.body.scrollHeight);
-            """)
-            await asyncio.sleep(2)
+            # Wait for network to be idle
+            try:
+                await page.wait_for_load_state('networkidle', timeout=15000)
+            except:
+                pass  # Continue even if networkidle times out
             
-            await page.evaluate("""
-                window.scrollTo(0, 0);
-            """)
-            await asyncio.sleep(1)
+            await asyncio.sleep(5)  # Give more time for dynamic content
 
-            # Try to find all links first and filter
-            all_links = await page.query_selector_all('a')
-            logger.info(f"Found {len(all_links)} total links on page")
+            # Scroll gradually to trigger lazy loading
+            scroll_steps = [0.25, 0.5, 0.75, 1.0]
+            for step in scroll_steps:
+                await page.evaluate(f"window.scrollTo(0, document.body.scrollHeight * {step});")
+                await asyncio.sleep(2)
+            
+            await page.evaluate("window.scrollTo(0, 0);")
+            await asyncio.sleep(2)
 
+            # Try multiple methods to find product URLs
             urls = []
             seen_hrefs = set()
             
-            for link in all_links:
-                try:
-                    href = await link.get_attribute('href')
-                    if not href:
-                        continue
-                    
-                    # Check if it's a product URL
-                    if '/p/' in href or '/shop/' in href:
-                        # Normalize URL
-                        if href.startswith('/'):
-                            full_url = urljoin(self.config.brand.base_url, href)
-                        elif href.startswith('http'):
-                            full_url = href
-                        else:
+            # Method 1: Find all links and filter for product URLs
+            try:
+                all_links = await page.query_selector_all('a')
+                logger.info(f"Found {len(all_links)} total links on page")
+                
+                for link in all_links:
+                    try:
+                        href = await link.get_attribute('href')
+                        if not href:
                             continue
                         
-                        # Extract product ID from URL
-                        if '/p/' in full_url:
-                            # Clean URL (remove query params)
-                            clean_url = full_url.split('?')[0]
+                        # Check if it's a product URL (more flexible pattern)
+                        if '/p/' in href or ('/shop/' in href and '/p/' in href):
+                            # Normalize URL
+                            if href.startswith('/'):
+                                full_url = urljoin(self.config.brand.base_url, href)
+                            elif href.startswith('http'):
+                                full_url = href
+                            else:
+                                continue
                             
-                            if clean_url not in self.processed_urls and clean_url not in seen_hrefs:
-                                urls.append(clean_url)
-                                seen_hrefs.add(clean_url)
-                                self.processed_urls.add(clean_url)
-                except Exception as e:
-                    logger.debug(f"Error processing link: {e}")
-                    continue
-
-            # Also try to extract from page content/JSON-LD
+                            # Extract product ID from URL
+                            if '/p/' in full_url:
+                                # Clean URL (remove query params and fragments)
+                                clean_url = full_url.split('?')[0].split('#')[0]
+                                
+                                if clean_url not in self.processed_urls and clean_url not in seen_hrefs:
+                                    urls.append(clean_url)
+                                    seen_hrefs.add(clean_url)
+                                    self.processed_urls.add(clean_url)
+                    except Exception as e:
+                        logger.debug(f"Error processing link: {e}")
+                        continue
+            except Exception as e:
+                logger.debug(f"Error finding links: {e}")
+            
+            # Method 2: Extract from JSON-LD structured data
             try:
-                # Check for JSON-LD structured data
                 json_ld_scripts = await page.query_selector_all('script[type="application/ld+json"]')
                 for script in json_ld_scripts:
                     try:
                         content = await script.text_content()
                         if content and '/p/' in content:
-                            # Extract URLs from JSON
                             import json
                             data = json.loads(content)
-                            if isinstance(data, dict):
-                                if 'url' in data and '/p/' in str(data['url']):
-                                    url = str(data['url']).split('?')[0]
-                                    if url not in self.processed_urls:
-                                        urls.append(url)
-                                        self.processed_urls.add(url)
-                    except:
+                            
+                            def extract_urls(obj, found_urls):
+                                if isinstance(obj, dict):
+                                    for key, value in obj.items():
+                                        if key in ['url', 'href', 'link', 'productUrl', '@id'] and isinstance(value, str) and '/p/' in value:
+                                            found_urls.add(value)
+                                        else:
+                                            extract_urls(value, found_urls)
+                                elif isinstance(obj, list):
+                                    for item in obj:
+                                        extract_urls(item, found_urls)
+                            
+                            found_urls = set()
+                            extract_urls(data, found_urls)
+                            for url in found_urls:
+                                clean_url = url.split('?')[0].split('#')[0]
+                                if clean_url not in self.processed_urls and clean_url not in seen_hrefs:
+                                    urls.append(clean_url)
+                                    seen_hrefs.add(clean_url)
+                                    self.processed_urls.add(clean_url)
+                    except Exception as e:
+                        logger.debug(f"Error parsing JSON-LD: {e}")
                         pass
             except Exception as e:
                 logger.debug(f"Error extracting from JSON-LD: {e}")
+            
+            # Method 3: Extract from script tags (often contains product data)
+            try:
+                scripts = await page.query_selector_all('script')
+                for script in scripts:
+                    try:
+                        content = await script.text_content()
+                        if content and '/p/' in content:
+                            # Use regex to find product URLs
+                            import re
+                            pattern = r'https?://[^\s"\'<>]+/p/[^\s"\'<>]+'
+                            found_urls = re.findall(pattern, content)
+                            for url in found_urls:
+                                clean_url = url.split('?')[0].split('#')[0]
+                                if clean_url not in self.processed_urls and clean_url not in seen_hrefs:
+                                    urls.append(clean_url)
+                                    seen_hrefs.add(clean_url)
+                                    self.processed_urls.add(clean_url)
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.debug(f"Error extracting from scripts: {e}")
+            
+            # Method 4: Try specific product card selectors
+            try:
+                product_selectors = [
+                    '[data-testid*="product"] a',
+                    '.product-card a',
+                    '.product-tile a',
+                    '[class*="product"] a[href*="/p/"]',
+                    'article a[href*="/p/"]'
+                ]
+                
+                for selector in product_selectors:
+                    try:
+                        elements = await page.query_selector_all(selector)
+                        for elem in elements:
+                            href = await elem.get_attribute('href')
+                            if href and '/p/' in href:
+                                if href.startswith('/'):
+                                    full_url = urljoin(self.config.brand.base_url, href)
+                                elif href.startswith('http'):
+                                    full_url = href
+                                else:
+                                    continue
+                                
+                                clean_url = full_url.split('?')[0].split('#')[0]
+                                if clean_url not in self.processed_urls and clean_url not in seen_hrefs:
+                                    urls.append(clean_url)
+                                    seen_hrefs.add(clean_url)
+                                    self.processed_urls.add(clean_url)
+                    except Exception:
+                        continue
+            except Exception as e:
+                logger.debug(f"Error using product selectors: {e}")
 
             logger.info(f"Found {len(urls)} unique product URLs on current page")
             
@@ -194,13 +351,22 @@ class AbercrombieFitchScraper:
             if urls:
                 logger.info(f"Sample product URLs: {urls[:3]}")
             else:
-                # Try to get page HTML snippet for debugging
+                # Try to get page info for debugging
                 try:
+                    page_title = await page.title()
+                    page_url = page.url
                     body_text = await page.evaluate("document.body.innerText")
-                    if 'product' in body_text.lower() or 'mens' in body_text.lower():
+                    body_length = len(body_text) if body_text else 0
+                    
+                    logger.warning(f"Page debug info - Title: '{page_title}', URL: {page_url}, Body text length: {body_length}")
+                    
+                    # Check if page has any content at all
+                    if body_length < 100:
+                        logger.warning("Page appears to be empty or blocked - may need to handle bot detection")
+                    elif 'product' in body_text.lower() or 'mens' in body_text.lower():
                         logger.warning("Page content found but no product URLs extracted - may need different selectors")
-                except:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Error getting debug info: {e}")
 
             return urls
 
@@ -486,30 +652,71 @@ class AbercrombieFitchScraper:
         """
         logger.info(f"Starting category scrape: {url}")
 
-        # Navigate to page
-        await page.goto(url, wait_until='domcontentloaded')
+        # Collect product URLs from network requests
+        product_urls_from_api = []
         
-        # Wait for content to load
-        await asyncio.sleep(5)  # Give more time for dynamic content
-        
-        # Try to wait for common product container selectors
-        product_container_selectors = [
-            '[data-testid*="product"]',
-            '.product-grid',
-            '.product-list',
-            '[class*="product"]',
-            '[class*="Product"]',
-            'main',
-            'article'
-        ]
-        
-        for selector in product_container_selectors:
+        async def handle_response(response):
+            """Intercept API responses to find product data"""
             try:
-                await page.wait_for_selector(selector, timeout=5000)
-                logger.info(f"Found container with selector: {selector}")
-                break
+                url_str = response.url
+                # Check if this is an API call that might contain product data
+                if any(keyword in url_str.lower() for keyword in ['api', 'product', 'catalog', 'search', 'category']):
+                    try:
+                        content_type = response.headers.get('content-type', '')
+                        if 'json' in content_type:
+                            data = await response.json()
+                            # Try to extract product URLs from JSON response
+                            if isinstance(data, dict):
+                                # Look for product URLs in various possible structures
+                                def find_urls(obj, found_urls):
+                                    if isinstance(obj, dict):
+                                        for key, value in obj.items():
+                                            if key in ['url', 'href', 'link', 'productUrl'] and isinstance(value, str) and '/p/' in value:
+                                                found_urls.add(value)
+                                            else:
+                                                find_urls(value, found_urls)
+                                    elif isinstance(obj, list):
+                                        for item in obj:
+                                            find_urls(item, found_urls)
+                                
+                                found_urls = set()
+                                find_urls(data, found_urls)
+                                if found_urls:
+                                    logger.info(f"Found {len(found_urls)} product URLs in API response: {url_str}")
+                                    product_urls_from_api.extend(found_urls)
+                    except:
+                        pass
             except:
-                continue
+                pass
+
+        # Set up response handler
+        page.on('response', handle_response)
+
+        # Navigate to page with longer timeout
+        try:
+            await page.goto(url, wait_until='domcontentloaded', timeout=60000)
+        except Exception as e:
+            logger.warning(f"Navigation timeout, continuing anyway: {e}")
+        
+        # Handle cookie consent immediately
+        await self._handle_cookie_consent(page)
+        
+        # Wait for network to be idle
+        try:
+            await page.wait_for_load_state('networkidle', timeout=30000)
+        except:
+            logger.debug("Networkidle timeout, continuing...")
+        
+        # Wait for content to load and API calls to complete
+        await asyncio.sleep(10)  # Give more time for dynamic content and API calls
+        
+        # Scroll to trigger lazy loading
+        for i in range(3):
+            await page.evaluate(f"window.scrollTo(0, {i * 500})")
+            await asyncio.sleep(2)
+        
+        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        await asyncio.sleep(3)
 
         total_processed = 0
         page_num = 1
@@ -517,21 +724,79 @@ class AbercrombieFitchScraper:
         while True:
             logger.info(f"Processing page {page_num}")
 
-            # Extract product URLs from current page
+            # Extract product URLs from current page (both DOM and API)
             product_urls = await self._extract_product_urls(page)
+            
+            # Add URLs found from API responses
+            if product_urls_from_api:
+                for api_url in product_urls_from_api:
+                    clean_url = api_url.split('?')[0]
+                    if clean_url not in self.processed_urls:
+                        product_urls.append(clean_url)
+                        self.processed_urls.add(clean_url)
+                product_urls_from_api.clear()  # Clear after using
+            
+            # If still no products, check if this is a category listing page
+            # and we need to navigate to subcategories
+            if not product_urls and page_num == 1:
+                logger.info("No products found, checking if this is a category listing page...")
+                # Look for category/subcategory links that might lead to product pages
+                category_links = await page.query_selector_all('a[href*="/shop/"]')
+                product_category_urls = []
+                for link in category_links:
+                    href = await link.get_attribute('href')
+                    if href and '/shop/' in href and '/p/' not in href:
+                        # Check if this looks like a product listing page (not a category page)
+                        text = await link.text_content()
+                        if text and len(text.strip()) < 50:  # Short text = likely product category
+                            full_url = urljoin(self.config.brand.base_url, href)
+                            if full_url not in self.processed_urls:
+                                product_category_urls.append(full_url)
+                
+                if product_category_urls:
+                    logger.info(f"Found {len(product_category_urls)} category pages, will scrape products from them")
+                    # Scrape products from category pages
+                    for cat_url in product_category_urls[:10]:  # Limit to avoid too many pages
+                        logger.info(f"Scraping products from category: {cat_url}")
+                        await page.goto(cat_url, wait_until='networkidle')
+                        await asyncio.sleep(5)
+                        cat_product_urls = await self._extract_product_urls(page)
+                        product_urls.extend(cat_product_urls)
+                        if max_products and len(product_urls) >= max_products:
+                            break
 
             if not product_urls:
                 # If no products found, try one more time with longer wait
                 if page_num == 1:
-                    logger.warning("No products found on first page, waiting longer...")
+                    logger.warning("No products found on first page, trying alternative methods...")
                     await asyncio.sleep(5)
-                    await page.reload(wait_until='networkidle')
-                    await asyncio.sleep(5)
-                    product_urls = await self._extract_product_urls(page)
+                    
+                    # Try to extract from page content directly
+                    try:
+                        # Look for product data in script tags
+                        scripts = await page.query_selector_all('script')
+                        for script in scripts:
+                            content = await script.text_content()
+                            if content and ('product' in content.lower() or '/p/' in content):
+                                # Try to extract URLs from script content
+                                import re
+                                urls_in_script = re.findall(r'https?://[^\s"\'<>]+/p/[^\s"\'<>]+', content)
+                                for script_url in urls_in_script:
+                                    clean_url = script_url.split('?')[0]
+                                    if clean_url not in self.processed_urls:
+                                        product_urls.append(clean_url)
+                                        self.processed_urls.add(clean_url)
+                    except Exception as e:
+                        logger.debug(f"Error extracting from scripts: {e}")
+                    
+                    if not product_urls:
+                        await page.reload(wait_until='networkidle')
+                        await asyncio.sleep(5)
+                        product_urls = await self._extract_product_urls(page)
                 
                 if not product_urls:
                     logger.info("No more products found, stopping pagination")
-                    # Debug: save page HTML snippet
+                    # Debug: log page info
                     try:
                         page_title = await page.title()
                         logger.info(f"Page title: {page_title}")
