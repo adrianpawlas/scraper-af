@@ -114,9 +114,36 @@ Logs are written to both:
 - If embedding generation fails, the product is still saved without embedding
 - The scraper handles pagination automatically by detecting URL patterns
 
+## GitHub Actions Workflow
+
+The repository includes a GitHub Actions workflow (`.github/workflows/daily-scrape.yml`) that:
+- Runs automatically every day at midnight UTC
+- Can be triggered manually from the GitHub Actions tab
+- Installs all dependencies and Playwright browsers
+- Runs the scraper and uploads logs as artifacts
+
+### Setting up GitHub Actions
+
+1. **Add Supabase Secret:**
+   - Go to your repository settings → Secrets and variables → Actions
+   - Click "New repository secret"
+   - Name: `SUPABASE_KEY`
+   - Value: Your Supabase service role key (the one in `config.py`)
+   - Click "Add secret"
+
+2. **Enable GitHub Actions:**
+   - The workflow is already configured and will run automatically
+   - To run manually: Go to Actions tab → "Daily Abercrombie & Fitch Scraper" → "Run workflow"
+
+3. **Monitor Runs:**
+   - Check the Actions tab to see workflow runs
+   - Logs are automatically uploaded as artifacts for 7 days
+   - Failed runs will show error details
+
 ## Troubleshooting
 
 - **No products found**: Check if the website structure has changed and update selectors in `product_scraper.py`
 - **Embedding errors**: Ensure you have sufficient memory/GPU for the SigLIP model
 - **Database errors**: Verify your Supabase credentials and table schema
+- **GitHub Actions failures**: Check that the `SUPABASE_KEY` secret is set correctly
 
