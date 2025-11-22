@@ -34,6 +34,7 @@ jobs:
       - name: Install Playwright browsers
         run: |
           playwright install chromium
+          playwright install firefox
       
       - name: Set up Supabase credentials
         env:

@@ -22,13 +22,66 @@ class ProductScraper:
         self.items_per_page = config.ITEMS_PER_PAGE
         
     async def init_browser(self) -> Browser:
-        """Initialize Playwright browser"""
+        """Initialize Playwright browser with stealth settings"""
         playwright = await async_playwright().start()
-        browser = await playwright.chromium.launch(
-            headless=config.HEADLESS,
-            args=['--no-sandbox', '--disable-setuid-sandbox']
-        )
+        # Try Firefox first as it's often less detectable, fallback to Chromium
+        try:
+            browser = await playwright.firefox.launch(
+                headless=config.HEADLESS,
+                args=['--no-sandbox'] if config.HEADLESS else []
+            )
+            logger.info("Using Firefox browser")
+        except Exception as e:
+            logger.warning(f"Firefox not available, using Chromium: {e}")
+            browser = await playwright.chromium.launch(
+                headless=config.HEADLESS,
+                args=[
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-blink-features=AutomationControlled',
+                    '--disable-dev-shm-usage',
+                ]
+            )
+            logger.info("Using Chromium browser")
         return browser
+    
+    async def create_stealth_page(self, browser: Browser) -> Page:
+        """Create a page with comprehensive stealth settings to avoid detection"""
+        # Use Firefox user agent if using Firefox, Chrome otherwise
+        browser_type = browser.browser_type.name if hasattr(browser, 'browser_type') else 'chromium'
+        
+        if browser_type == 'firefox':
+            user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0'
+        else:
+            user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        
+        context = await browser.new_context(
+            viewport={'width': 1920, 'height': 1080},
+            user_agent=user_agent,
+            locale='en-US',
+            timezone_id='America/New_York',
+            color_scheme='light',
+        )
+        page = await context.new_page()
+        
+        # Comprehensive anti-detection script (only for Chromium)
+        if browser_type == 'chromium':
+            await page.add_init_script("""
+                // Remove webdriver property
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined
+                });
+                
+                // Mock chrome object
+                window.chrome = {
+                    runtime: {},
+                    loadTimes: function() {},
+                    csi: function() {},
+                    app: {}
+                };
+            """)
+        
+        return page
     
     async def get_product_urls_from_page(self, page: Page, category_url: str) -> List[str]:
         """
@@ -45,70 +98,185 @@ class ProductScraper:
         
         try:
             logger.info(f"Loading category page: {category_url}")
-            await page.goto(category_url, wait_until="networkidle", timeout=config.BROWSER_TIMEOUT)
-            await asyncio.sleep(2)  # Wait for dynamic content
+            # Use load event instead of domcontentloaded for better compatibility
+            await page.goto(category_url, wait_until="load", timeout=config.BROWSER_TIMEOUT)
             
-            # Wait for products to load - try waiting for specific elements
-            try:
-                # Wait for product grid or product cards to appear
-                await page.wait_for_selector('a[href*="/p/"]', timeout=10000)
-            except:
-                # If selector doesn't appear, wait a bit more for dynamic content
-                await asyncio.sleep(3)
+            # Wait for page to be interactive and content to load
+            await asyncio.sleep(10)
             
-            # Get page content after waiting
-            content = await page.content()
-            soup = BeautifulSoup(content, 'html.parser')
+            # Try to wait for product links to appear with multiple attempts
+            product_links_found = False
+            for attempt in range(3):
+                try:
+                    await page.wait_for_selector('a[href*="/p/"]', timeout=5000)
+                    logger.debug(f"Product links detected on page (attempt {attempt + 1})")
+                    product_links_found = True
+                    break
+                except:
+                    if attempt < 2:
+                        logger.debug(f"Waiting for products... (attempt {attempt + 1})")
+                        await asyncio.sleep(3)
+                        # Try scrolling to trigger loading
+                        await page.evaluate("window.scrollBy(0, 300)")
             
-            # Find product links - Abercrombie typically uses specific selectors
-            # Try multiple possible selectors
-            product_links = []
+            if not product_links_found:
+                logger.warning("Product links not found after waiting, continuing anyway...")
             
-            # Method 1: Look for links containing /p/ (product pages)
-            all_links = soup.find_all('a', href=True)
-            for link in all_links:
-                href = link.get('href', '')
-                # Check for product URLs - they contain /p/ and product codes
-                if '/p/' in href and href not in product_links:
-                    # Filter out non-product links
-                    if any(x in href.lower() for x in ['/p/', 'product', 'item']) and 'category' not in href.lower():
-                        full_url = urljoin(self.base_url, href)
-                        product_links.append(full_url)
-            
-            # Method 2: Look for data attributes that might contain product URLs
-            product_elements = soup.find_all(attrs={'data-product-url': True})
-            for elem in product_elements:
-                url = elem.get('data-product-url')
-                if url and '/p/' in url:
-                    full_url = urljoin(self.base_url, url)
-                    if full_url not in product_links:
-                        product_links.append(full_url)
-            
-            # Method 3: Try to find product links via JavaScript evaluation
-            try:
-                js_product_urls = await page.evaluate("""
-                    () => {
-                        const links = Array.from(document.querySelectorAll('a[href*="/p/"]'));
-                        return links.map(link => link.href).filter(href => href && href.includes('/p/'));
+            # Scroll down gradually to trigger lazy loading
+            await page.evaluate("""
+                async () => {
+                    for (let i = 0; i < 8; i++) {
+                        window.scrollBy(0, 400);
+                        await new Promise(resolve => setTimeout(resolve, 300));
                     }
-                """)
-                for url in js_product_urls:
-                    if url and '/p/' in url and url not in product_links:
-                        product_links.append(url)
+                }
+            """)
+            await asyncio.sleep(3)
+            
+            # Scroll to bottom
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            await asyncio.sleep(3)
+            
+            # Try to wait for product elements - check multiple possible selectors
+            product_selectors = [
+                'a[href*="/p/"]',
+                '[data-testid*="product"]',
+                '[class*="product-card"]',
+                '[class*="product-item"]',
+            ]
+            
+            found_products = False
+            for selector in product_selectors:
+                try:
+                    await page.wait_for_selector(selector, timeout=5000)
+                    found_products = True
+                    logger.debug(f"Found products using selector: {selector}")
+                    break
+                except:
+                    continue
+            
+            if not found_products:
+                logger.warning("No product selectors found, continuing anyway...")
+                await asyncio.sleep(2)  # Wait a bit more
+            
+            # Primary method: Use JavaScript evaluation (most reliable for dynamic content)
+            product_links = []
+            try:
+                # Try multiple times with delays if needed
+                for attempt in range(2):
+                    js_product_urls = await page.evaluate("""
+                        () => {
+                            try {
+                                const links = Array.from(document.querySelectorAll('a[href*="/p/"]'));
+                                const urls = [];
+                                
+                                for (const link of links) {
+                                    let href = link.href || link.getAttribute('href');
+                                    if (!href) continue;
+                                    
+                                    // Handle relative URLs
+                                    if (href.startsWith('/')) {
+                                        href = window.location.origin + href;
+                                    } else if (!href.startsWith('http')) {
+                                        try {
+                                            href = new URL(href, window.location.href).href;
+                                        } catch {
+                                            continue;
+                                        }
+                                    }
+                                    
+                                    // Filter out non-product links
+                                    if (!href.includes('/p/') || href.includes('category')) {
+                                        continue;
+                                    }
+                                    
+                                    // Remove query parameters and fragments
+                                    try {
+                                        const url = new URL(href);
+                                        urls.push(url.origin + url.pathname);
+                                    } catch {
+                                        const clean = href.split('?')[0].split('#')[0];
+                                        if (clean.includes('/p/')) {
+                                            urls.push(clean);
+                                        }
+                                    }
+                                }
+                                
+                                // Remove duplicates
+                                return [...new Set(urls)];
+                            } catch (e) {
+                                return [];
+                            }
+                        }
+                    """)
+                    
+                    if js_product_urls and len(js_product_urls) > 0:
+                        product_links.extend(js_product_urls)
+                        logger.info(f"JavaScript found {len(js_product_urls)} product URLs")
+                        break
+                    elif attempt == 0:
+                        logger.debug("No products found, waiting and retrying...")
+                        await asyncio.sleep(3)
+                        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                        await asyncio.sleep(2)
+                else:
+                    logger.warning("JavaScript found 0 product URLs after retries")
             except Exception as e:
-                logger.debug(f"JavaScript extraction failed: {e}")
+                logger.warning(f"JavaScript extraction failed: {e}", exc_info=True)
+            
+            # Fallback: Parse HTML if JavaScript didn't find anything
+            if not product_links:
+                content = await page.content()
+                soup = BeautifulSoup(content, 'html.parser')
+                
+                # Look for links containing /p/ (product pages)
+                all_links = soup.find_all('a', href=True)
+                for link in all_links:
+                    href = link.get('href', '')
+                    if '/p/' in href and 'category' not in href.lower():
+                        full_url = urljoin(self.base_url, href)
+                        parsed = urlparse(full_url)
+                        clean_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+                        if clean_url not in product_links:
+                            product_links.append(clean_url)
+                
+                # Look for data attributes
+                product_elements = soup.find_all(attrs={'data-product-url': True})
+                for elem in product_elements:
+                    url = elem.get('data-product-url')
+                    if url and '/p/' in url:
+                        full_url = urljoin(self.base_url, url)
+                        parsed = urlparse(full_url)
+                        clean_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+                        if clean_url not in product_links:
+                            product_links.append(clean_url)
             
             # Remove duplicates and clean URLs
             seen = set()
             for url in product_links:
-                # Remove query parameters for consistency
-                parsed = urlparse(url)
-                clean_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
-                if clean_url not in seen and '/p/' in clean_url:
-                    seen.add(clean_url)
-                    product_urls.append(clean_url)
+                # Remove query parameters and fragments for consistency
+                try:
+                    parsed = urlparse(url)
+                    clean_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+                    # Only add if it's a product URL (contains /p/ and looks like a product)
+                    if clean_url not in seen and '/p/' in clean_url and 'category' not in clean_url.lower():
+                        seen.add(clean_url)
+                        product_urls.append(clean_url)
+                except Exception as e:
+                    logger.debug(f"Error parsing URL {url}: {e}")
+                    continue
             
             logger.info(f"Found {len(product_urls)} products on page")
+            if len(product_urls) == 0:
+                # Debug: log what we found
+                logger.debug(f"Total links found in HTML: {len(all_links)}")
+                logger.debug(f"Product elements with data attributes: {len(product_elements)}")
+                # Try one more time with a longer wait
+                await asyncio.sleep(5)
+                content2 = await page.content()
+                soup2 = BeautifulSoup(content2, 'html.parser')
+                links2 = soup2.find_all('a', href=lambda x: x and '/p/' in x)
+                logger.debug(f"After additional wait, found {len(links2)} links with /p/")
             
         except Exception as e:
             logger.error(f"Error extracting product URLs from {category_url}: {e}")
@@ -127,14 +295,14 @@ class ProductScraper:
             List of all product URLs
         """
         browser = await self.init_browser()
-        page = await browser.new_page()
+        page = await self.create_stealth_page(browser)
         
         all_product_urls = []
         page_num = 0
         
         try:
             # First, get categoryId from the first page
-            await page.goto(category_url, wait_until="networkidle", timeout=config.BROWSER_TIMEOUT)
+            await page.goto(category_url, wait_until="domcontentloaded", timeout=config.BROWSER_TIMEOUT)
             await asyncio.sleep(2)
             
             current_url = page.url
@@ -507,7 +675,7 @@ class ProductScraper:
         
         # Scrape each product
         browser = await self.init_browser()
-        page = await browser.new_page()
+        page = await self.create_stealth_page(browser)
         
         products = []
         try:
