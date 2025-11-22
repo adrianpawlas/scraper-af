@@ -114,12 +114,14 @@ embeddings:
 
 ## Usage
 
-### Basic Scraping
+### Local Scraping
+
+#### Basic Scraping
 ```bash
 python main.py
 ```
 
-### Custom Options
+#### Custom Options
 ```bash
 # Scrape with custom URL
 python main.py --start-url "https://www.abercrombie.com/shop/eu/womens"
@@ -130,6 +132,45 @@ python main.py --max-products 10
 # Dry run (no database saves)
 python main.py --dry-run
 ```
+
+### Automated Daily Scraping
+
+The scraper includes a GitHub Actions workflow that runs automatically every day at midnight UTC.
+
+#### Setup GitHub Secrets
+
+To enable automated scraping, add these secrets to your GitHub repository:
+
+1. Go to **Settings** → **Secrets and variables** → **Actions**
+2. Add the following secrets:
+   - `SUPABASE_URL`: Your Supabase project URL
+   - `SUPABASE_ANON_KEY`: Your Supabase anonymous key
+
+#### Workflow Features
+
+- **Daily Schedule**: Runs automatically at midnight UTC every day
+- **Manual Trigger**: Can be triggered manually from the Actions tab
+- **Configurable Limits**: Default max 50 products per run (configurable)
+- **Dry Run Mode**: Safe testing mode that doesn't save to database
+- **Comprehensive Logging**: Detailed logs and artifacts for debugging
+- **Error Handling**: Proper failure notifications and status reporting
+
+#### Manual Workflow Trigger
+
+1. Go to the **Actions** tab in your GitHub repository
+2. Select **"Daily Fashion Product Scrape"** workflow
+3. Click **"Run workflow"**
+4. Configure options:
+   - **Max products**: Number of products to scrape (default: 50)
+   - **Dry run**: Enable for testing without database writes
+
+#### Workflow Status
+
+Monitor workflow runs in the **Actions** tab. Each run provides:
+- Execution logs
+- Scraped data summary
+- Error reports and artifacts
+- Performance metrics
 
 ### Advanced Usage
 
