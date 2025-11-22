@@ -16,14 +16,16 @@ logger = logging.getLogger(__name__)
 class EmbeddingGenerator:
     """Generate 768-dimensional embeddings from product images using SigLIP"""
     
-    def __init__(self, model_name: str = "google/siglip-base-patch16-384"):
+    def __init__(self, model_name: str = "google/siglip-base-patch16-384", browser_page=None):
         """
         Initialize the embedding generator
-        
+
         Args:
             model_name: HuggingFace model identifier
+            browser_page: Playwright page object for image downloads (optional)
         """
         logger.info(f"Loading SigLIP model: {model_name}")
+        self.browser_page = browser_page
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         logger.info(f"Using device: {self.device}")
         
@@ -48,29 +50,84 @@ class EmbeddingGenerator:
         
         logger.info("Model loaded successfully")
     
-    def download_image(self, image_url: str) -> Optional[Image.Image]:
+    async def download_image(self, image_url: str) -> Optional[Image.Image]:
         """
-        Download image from URL
-        
+        Download image from URL using browser context if available
+
         Args:
             image_url: URL of the image
-            
+
         Returns:
             PIL Image object or None if download fails
         """
         try:
-            response = requests.get(image_url, timeout=30, stream=True)
-            response.raise_for_status()
-            image = Image.open(BytesIO(response.content))
-            # Convert to RGB if necessary
-            if image.mode != 'RGB':
-                image = image.convert('RGB')
-            return image
+            # Use browser context if available (bypasses anti-bot protection)
+            if self.browser_page:
+                logger.debug(f"Downloading image via browser: {image_url}")
+                # Use browser to get cookies and then download with requests
+                try:
+                    # Get cookies from browser session
+                    cookies = await self.browser_page.context.cookies()
+                    cookie_dict = {cookie['name']: cookie['value'] for cookie in cookies}
+
+                    # Use requests with browser cookies and proper headers
+                    response = requests.get(image_url, timeout=30, headers={
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                        'Accept': 'image/*,*/*;q=0.8',
+                        'Accept-Language': 'en-US,en;q=0.9',
+                        'Accept-Encoding': 'gzip, deflate, br',
+                        'Referer': 'https://www.abercrombie.com/',
+                        'Connection': 'keep-alive',
+                        'Upgrade-Insecure-Requests': '1',
+                        'Sec-Fetch-Dest': 'image',
+                        'Sec-Fetch-Mode': 'no-cors',
+                        'Sec-Fetch-Site': 'cross-site'
+                    }, cookies=cookie_dict, stream=True)
+                    response.raise_for_status()
+                    image = Image.open(BytesIO(response.content))
+                    # Convert to RGB if necessary
+                    if image.mode != 'RGB':
+                        image = image.convert('RGB')
+                    return image
+                except Exception as e:
+                    logger.warning(f"Browser cookie approach failed: {e}")
+                    return None
+
+                if image_data:
+                    # Convert base64 back to bytes and create PIL image
+                    import base64
+                    image_bytes = base64.b64decode(image_data)
+                    image = Image.open(BytesIO(image_bytes))
+                    # Convert to RGB if necessary
+                    if image.mode != 'RGB':
+                        image = image.convert('RGB')
+                    return image
+                else:
+                    logger.warning(f"Browser fetch failed for {image_url}")
+                    return None
+            else:
+                # Fallback to direct requests with better headers
+                logger.debug(f"Downloading image via requests: {image_url}")
+                response = requests.get(image_url, timeout=30, headers={
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': 'image/*,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Accept-Encoding': 'gzip, deflate, br',
+                    'Referer': 'https://www.abercrombie.com/',
+                    'Connection': 'keep-alive',
+                    'Upgrade-Insecure-Requests': '1'
+                }, stream=True)
+                response.raise_for_status()
+                image = Image.open(BytesIO(response.content))
+                # Convert to RGB if necessary
+                if image.mode != 'RGB':
+                    image = image.convert('RGB')
+                return image
         except Exception as e:
             logger.error(f"Failed to download image from {image_url}: {e}")
             return None
     
-    def generate_embedding(self, image_url: str) -> Optional[List[float]]:
+    async def generate_embedding(self, image_url: str) -> Optional[List[float]]:
         """
         Generate 768-dimensional embedding from image URL
         
@@ -82,7 +139,7 @@ class EmbeddingGenerator:
         """
         try:
             # Download image
-            image = self.download_image(image_url)
+            image = await self.download_image(image_url)
             if image is None:
                 return None
             

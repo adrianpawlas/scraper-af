@@ -504,12 +504,13 @@ class APIScraper:
                 logger.error(f"Browser fetch failed: {e}")
 
             # If no products found, try the fallback method
-            if not all_products:
-                logger.warning("All fetch methods failed, trying requests fallback...")
-                api_response = await self.fetch_category_data(page, category_id, 0, 90)
-                if api_response:
-                    products = self.extract_products_from_response(api_response)
-                    all_products.extend(products)
+            # Skip additional pages for now - focus on getting first page working
+            # if not all_products:
+            #     logger.warning("All fetch methods failed, trying requests fallback...")
+            #     api_response = await self.fetch_category_data(page, category_id, 0, 90)
+            #     if api_response:
+            #         products = self.extract_products_from_response(api_response)
+            #         all_products.extend(products)
             
             # Fetch additional pages
             if max_pages is None or max_pages > 1:
