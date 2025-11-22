@@ -2,7 +2,7 @@
 Image embedding generator using SigLIP model
 """
 import torch
-from transformers import SiglipModel, SiglipImageProcessor
+from transformers import AutoProcessor, AutoModel
 from PIL import Image
 import requests
 from io import BytesIO
@@ -27,17 +27,21 @@ class EmbeddingGenerator:
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         logger.info(f"Using device: {self.device}")
         
-        # Use SiglipImageProcessor and SiglipModel for SigLIP models
+        # Use AutoProcessor for SigLIP models (works for vision-language models)
         try:
-            self.processor = SiglipImageProcessor.from_pretrained(model_name)
-            self.model = SiglipModel.from_pretrained(model_name)
-        except Exception as e:
-            logger.error(f"Failed to load SigLIP model: {e}")
-            # Fallback: try AutoModel/AutoImageProcessor
-            logger.warning("Trying fallback with AutoModel...")
-            from transformers import AutoModel, AutoImageProcessor
-            self.processor = AutoImageProcessor.from_pretrained(model_name)
+            self.processor = AutoProcessor.from_pretrained(model_name)
             self.model = AutoModel.from_pretrained(model_name)
+        except Exception as e:
+            logger.error(f"Failed to load SigLIP model with AutoProcessor: {e}")
+            # Fallback: try SiglipImageProcessor if available
+            try:
+                from transformers import SiglipImageProcessor, SiglipModel
+                logger.info("Trying SiglipImageProcessor...")
+                self.processor = SiglipImageProcessor.from_pretrained(model_name)
+                self.model = SiglipModel.from_pretrained(model_name)
+            except Exception as e2:
+                logger.error(f"Failed to load with SiglipImageProcessor: {e2}")
+                raise RuntimeError(f"Could not load SigLIP model {model_name}. Please ensure transformers>=4.37.0 is installed.")
         
         self.model.to(self.device)
         self.model.eval()
@@ -82,13 +86,23 @@ class EmbeddingGenerator:
             if image is None:
                 return None
             
-            # Process image - AutoImageProcessor returns pixel_values
+            # Process image - AutoProcessor for SigLIP returns pixel_values
             processed = self.processor(images=image, return_tensors="pt")
             inputs = {k: v.to(self.device) for k, v in processed.items()}
             
-            # Generate embedding
+            # Generate embedding - SigLIP models use get_image_features
             with torch.no_grad():
-                outputs = self.model.get_image_features(**inputs)
+                if hasattr(self.model, 'get_image_features'):
+                    outputs = self.model.get_image_features(**inputs)
+                else:
+                    # Fallback: try forward pass and extract image features
+                    outputs = self.model(**inputs)
+                    if hasattr(outputs, 'image_embeds'):
+                        outputs = outputs.image_embeds
+                    elif isinstance(outputs, tuple):
+                        outputs = outputs[0]
+                    else:
+                        outputs = outputs
                 # Get the embedding tensor
                 embedding = outputs[0].cpu().numpy()
                 
