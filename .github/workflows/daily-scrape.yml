@@ -9,14 +9,14 @@ on:
   workflow_dispatch:
     inputs:
       max_products:
-        description: 'Maximum products to scrape (default: 50)'
+        description: 'Maximum products to scrape (leave empty for all products)'
         required: false
-        default: '50'
+        default: ''
         type: string
       dry_run:
         description: 'Run in dry-run mode (no database writes)'
         required: false
-        default: true
+        default: false
         type: boolean
 
 env:
@@ -26,8 +26,8 @@ jobs:
   scrape:
     runs-on: ubuntu-latest
 
-    # Set timeout to prevent hanging
-    timeout-minutes: 30
+    # Set timeout to prevent hanging (increased for full product scraping)
+    timeout-minutes: 120
 
     steps:
     - name: Checkout repository
@@ -66,18 +66,19 @@ jobs:
       env:
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
         SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
-        MAX_PRODUCTS: ${{ github.event.inputs.max_products || '50' }}
+        MAX_PRODUCTS: ${{ github.event.inputs.max_products }}
         DRY_RUN: ${{ github.event.inputs.dry_run == true && '--dry-run' || '' }}
       run: |
         echo "Starting daily scrape..."
-        echo "Max products: $MAX_PRODUCTS"
-        echo "Dry run: $DRY_RUN"
+        echo "Max products: ${MAX_PRODUCTS:-unlimited}"
+        echo "Dry run: ${DRY_RUN:-false}"
 
-        # Run scraper with limits suitable for CI
-        python main.py \
-          --max-products "$MAX_PRODUCTS" \
-          $DRY_RUN \
-          2>&1 | tee scrape_log.txt
+        # Run scraper - scrape all products by default
+        if [ -z "$MAX_PRODUCTS" ]; then
+          python main.py $DRY_RUN 2>&1 | tee scrape_log.txt
+        else
+          python main.py --max-products "$MAX_PRODUCTS" $DRY_RUN 2>&1 | tee scrape_log.txt
+        fi
 
         echo "Scrape completed"
 
@@ -99,8 +100,8 @@ jobs:
 
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "**Configuration:**" >> $GITHUB_STEP_SUMMARY
-        echo "- Max products: ${{ github.event.inputs.max_products || '50' }}" >> $GITHUB_STEP_SUMMARY
-        echo "- Dry run: ${{ github.event.inputs.dry_run || 'true' }}" >> $GITHUB_STEP_SUMMARY
+        echo "- Max products: ${{ github.event.inputs.max_products || 'unlimited (all products)' }}" >> $GITHUB_STEP_SUMMARY
+        echo "- Dry run: ${{ github.event.inputs.dry_run || 'false' }}" >> $GITHUB_STEP_SUMMARY
 
     - name: Upload logs
       if: always()

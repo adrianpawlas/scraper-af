@@ -61,9 +61,15 @@ class AbercrombieFitchScraper:
 
     async def _setup_browser(self):
         """Setup Playwright browser"""
+        import os
+        
+        # Detect CI environment and use headless mode
+        is_ci = os.getenv('CI') == 'true' or os.getenv('GITHUB_ACTIONS') == 'true'
+        headless_mode = is_ci or os.getenv('HEADLESS', 'true').lower() == 'true'
+        
         playwright = await async_playwright().start()
         self.browser = await playwright.chromium.launch(
-            headless=False,  # Set to True for production
+            headless=headless_mode,
             args=[
                 '--no-sandbox',
                 '--disable-setuid-sandbox',

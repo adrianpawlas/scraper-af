@@ -11,6 +11,7 @@ torch==2.4.0
 torchvision==0.19.0
 transformers==4.40.0
 Pillow==10.3.0
+sentencepiece==0.2.0
 
 # Configuration and utilities
 PyYAML==6.0.2
