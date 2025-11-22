@@ -7,7 +7,7 @@ import sys
 from typing import List, Dict
 from tqdm import tqdm
 import config
-from product_scraper import ProductScraper
+from api_scraper import APIScraper
 from embedding_generator import EmbeddingGenerator
 from database import Database
 
@@ -27,7 +27,7 @@ class ScraperOrchestrator:
     """Orchestrates the entire scraping process"""
     
     def __init__(self):
-        self.scraper = ProductScraper()
+        self.scraper = APIScraper()
         self.embedding_gen = None
         self.db = Database()
     
@@ -49,7 +49,7 @@ class ScraperOrchestrator:
             List of product dictionaries
         """
         logger.info(f"Starting to scrape category: {category_url}")
-        products = await self.scraper.scrape_all_products(category_url, max_pages)
+        products = await self.scraper.scrape_category(category_url, max_pages)
         logger.info(f"Scraped {len(products)} products from category")
         return products
     
