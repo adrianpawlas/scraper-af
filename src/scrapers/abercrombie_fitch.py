@@ -110,22 +110,44 @@ class AbercrombieFitchScraper:
             List of product URLs
         """
         try:
-            # Wait for product grid to load
-            await page.wait_for_selector(self.config.scraping.selectors.product_grid, timeout=10000)
+            # Wait for page to load
+            await page.wait_for_load_state('networkidle')
+            await asyncio.sleep(2)  # Give time for dynamic content
 
-            # Extract product links
-            product_links = await page.query_selector_all(self.config.scraping.selectors.product_link)
+            # Try multiple selector strategies
+            product_link_selectors = [
+                self.config.scraping.selectors.get('product_link', 'a[href*="/p/"]'),
+                'a[href*="/shop/eu/p/"]',
+                'a[href*="/p/"]',
+                '[data-testid*="product"] a',
+                '.product-card a',
+                '.product-tile a',
+                'article a[href*="/p/"]'
+            ]
 
             urls = []
-            for link in product_links:
-                href = await link.get_attribute('href')
-                if href:
-                    full_url = urljoin(self.config.brand.base_url, href)
-                    if full_url not in self.processed_urls:
-                        urls.append(full_url)
-                        self.processed_urls.add(full_url)
+            for selector in product_link_selectors:
+                try:
+                    product_links = await page.query_selector_all(selector)
+                    if product_links:
+                        logger.info(f"Found {len(product_links)} links with selector: {selector}")
+                        for link in product_links:
+                            href = await link.get_attribute('href')
+                            if href and '/p/' in href:
+                                full_url = urljoin(self.config.brand.base_url, href)
+                                # Clean URL (remove query params that might cause duplicates)
+                                clean_url = full_url.split('?')[0]
+                                if clean_url not in self.processed_urls:
+                                    urls.append(clean_url)
+                                    self.processed_urls.add(clean_url)
+                        
+                        if urls:
+                            break  # Found products, stop trying other selectors
+                except Exception as e:
+                    logger.debug(f"Selector {selector} failed: {e}")
+                    continue
 
-            logger.info(f"Found {len(urls)} product URLs on current page")
+            logger.info(f"Found {len(urls)} unique product URLs on current page")
             return urls
 
         except Exception as e:
@@ -151,14 +173,14 @@ class AbercrombieFitchScraper:
             await page.wait_for_selector('h1', timeout=10000)
 
             # Extract basic information
-            title = await self._extract_text(page, self.config.scraping.selectors.product_title)
+            title = await self._extract_text(page, self.config.scraping.selectors.get('product_title', 'h1'))
             if not title:
                 title = await page.title()
                 # Clean up title
                 title = title.split('|')[0].strip() if '|' in title else title.strip()
 
             # Extract price
-            price_text = await self._extract_text(page, self.config.scraping.selectors.product_price)
+            price_text = await self._extract_text(page, self.config.scraping.selectors.get('product_price', '[data-testid="price"]'))
             price = self._parse_price(price_text)
 
             # Extract image URL
@@ -218,7 +240,8 @@ class AbercrombieFitchScraper:
         """Extract main product image URL"""
         try:
             # Try configured selector first
-            element = await page.query_selector(self.config.scraping.selectors.product_image)
+            image_selector = self.config.scraping.selectors.get('product_image', 'img[data-testid="product-image"]')
+            element = await page.query_selector(image_selector)
             if element:
                 src = await element.get_attribute('src')
                 if src:
@@ -460,7 +483,7 @@ class AbercrombieFitchScraper:
         try:
             # Try different pagination selectors
             pagination_selectors = [
-                self.config.scraping.pagination.next_button,
+                self.config.scraping.pagination.get('next_button', '[data-testid="pagination-next"]'),
                 '[data-testid="pagination-next"]',
                 '.pagination-next',
                 '.next-page',
@@ -489,7 +512,7 @@ class AbercrombieFitchScraper:
 
             # Try load more button
             load_more_selectors = [
-                self.config.scraping.pagination.load_more_button,
+                self.config.scraping.pagination.get('load_more_button', '[data-testid="load-more"]'),
                 '[data-testid="load-more"]',
                 '.load-more',
                 '.show-more'
