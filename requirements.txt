@@ -2,7 +2,7 @@ playwright==1.40.0
 beautifulsoup4==4.12.2
 requests==2.31.0
 supabase==2.7.4
-transformers==4.36.0
+transformers>=4.37.0
 torch==2.1.0
 torchvision==0.16.0
 numpy<2.0.0
