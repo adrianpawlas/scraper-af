@@ -94,19 +94,15 @@ class ScraperOrchestrator:
 
             products_with_embeddings = []
             for product in tqdm(products, desc="Generating embeddings"):
-                image_url = product.get('image_url')
-                if image_url:
-                    embedding = await self.embedding_gen.generate_embedding(image_url)
-                    if embedding:
-                        product['embedding'] = embedding
-                        products_with_embeddings.append(product)
-                        logger.debug(f"Generated embedding for {product.get('title', 'Unknown product')}")
-                    else:
-                        logger.warning(f"Failed to generate embedding for {product.get('title', 'Unknown product')}")
-                        # Still add product without embedding
-                        products_with_embeddings.append(product)
+                # Use text-based embeddings instead of image-based (Adobe Scene7 blocks images)
+                embedding = await self.embedding_gen.generate_embedding_from_text(product)
+                if embedding:
+                    product['embedding'] = embedding
+                    products_with_embeddings.append(product)
+                    logger.debug(f"Generated text embedding for {product.get('title', 'Unknown product')}")
                 else:
-                    logger.warning(f"No image URL for product {product.get('title', 'Unknown product')}")
+                    logger.warning(f"Failed to generate text embedding for {product.get('title', 'Unknown product')}")
+                    # Still add product without embedding
                     products_with_embeddings.append(product)
 
             logger.info(f"Generated embeddings for {len(products_with_embeddings)} products")
