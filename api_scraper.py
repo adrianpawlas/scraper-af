@@ -69,7 +69,6 @@ class APIScraper:
         # For now, hardcode some known men's subcategories to test API scraping
         logger.info(f"Using hardcoded men's subcategories for testing")
         subcategories = [
-            {'url': 'https://www.abercrombie.com/shop/eu/mens-new-arrivals', 'categoryId': '84591', 'name': 'New Arrivals'},
             {'url': 'https://www.abercrombie.com/shop/eu/mens-bottoms--1', 'categoryId': '6570775', 'name': 'Bottoms'},
         ]
         logger.info(f"Found {len(subcategories)} hardcoded subcategories")
@@ -483,18 +482,12 @@ class APIScraper:
                                 try {{
                                     return JSON.parse(text);
                                 }} catch (e) {{
-                                    console.log('JSON parse error:', e);
-                                    console.log('Response text:', text.substring(0, 500));
                                     return null;
                                 }}
                             }} else {{
-                                console.log('Response status:', response.status);
-                                const text = await response.text();
-                                console.log('Response text:', text.substring(0, 200));
                                 return null;
                             }}
                         }} catch (e) {{
-                            console.log('Fetch error:', e);
                             return null;
                         }}
                     }}
