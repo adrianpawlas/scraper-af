@@ -74,30 +74,78 @@ class APIScraper:
             await page.goto(category_url, wait_until="load", timeout=30000)
             await asyncio.sleep(5)
             
-            # Extract subcategory links - they typically have categoryId in URL
+            # Extract subcategory links - try multiple selectors
             subcategory_links = await page.evaluate("""
                 () => {
-                    const links = Array.from(document.querySelectorAll('a[href*="categoryId"]'));
                     const subcats = [];
                     const seen = new Set();
                     
+                    // Try multiple selectors
+                    const selectors = [
+                        'a[href*="categoryId"]',
+                        'a[href*="/mens-"]',
+                        'a[href*="/womens-"]',
+                        '[data-category-id]',
+                        '.category-link',
+                        'nav a',
+                        'a[class*="category"]'
+                    ];
+                    
+                    let links = [];
+                    for (const selector of selectors) {
+                        try {
+                            const found = Array.from(document.querySelectorAll(selector));
+                            links.push(...found);
+                        } catch (e) {}
+                    }
+                    
+                    // Also try to find links in navigation menus
+                    const navLinks = Array.from(document.querySelectorAll('nav a, [role="navigation"] a'));
+                    links.push(...navLinks);
+                    
                     for (const link of links) {
-                        const href = link.href;
-                        if (href.includes('categoryId=') && !seen.has(href)) {
-                            seen.add(href);
-                            try {
-                                const url = new URL(href);
-                                const categoryId = url.searchParams.get('categoryId');
-                                if (categoryId) {
-                                    subcats.push({
-                                        url: href,
-                                        categoryId: categoryId,
-                                        name: link.textContent?.trim() || ''
-                                    });
+                        const href = link.href || link.getAttribute('href') || '';
+                        if (!href) continue;
+                        
+                        // Check if it has categoryId in URL or is a category link
+                        if (href.includes('categoryId=') || href.match(/\\/(mens|womens)-[^\\/]+/)) {
+                            if (!seen.has(href)) {
+                                seen.add(href);
+                                try {
+                                    const url = new URL(href, window.location.origin);
+                                    const categoryId = url.searchParams.get('categoryId');
+                                    
+                                    // If no categoryId in URL, try to extract from path
+                                    let catId = categoryId;
+                                    if (!catId && href.includes('/mens-')) {
+                                        // Try to find categoryId from data attributes or other sources
+                                        const dataId = link.getAttribute('data-category-id') || 
+                                                     link.getAttribute('data-id') ||
+                                                     link.closest('[data-category-id]')?.getAttribute('data-category-id');
+                                        if (dataId) catId = dataId;
+                                    }
+                                    
+                                    if (catId || href.match(/\\/(mens|womens)-[^\\/]+/)) {
+                                        subcats.push({
+                                            url: href,
+                                            categoryId: catId || '',
+                                            name: (link.textContent || link.innerText || '').trim() || href.split('/').pop()
+                                        });
+                                    }
+                                } catch (e) {
+                                    // If URL parsing fails, still try to add if it looks like a category link
+                                    if (href.match(/\\/(mens|womens)-[^\\/]+/)) {
+                                        subcats.push({
+                                            url: href,
+                                            categoryId: '',
+                                            name: (link.textContent || link.innerText || '').trim() || href.split('/').pop()
+                                        });
+                                    }
                                 }
-                            } catch (e) {}
+                            }
                         }
                     }
+                    
                     return subcats;
                 }
             """)
@@ -105,8 +153,46 @@ class APIScraper:
             subcategories.extend(subcategory_links)
             logger.info(f"Found {len(subcategories)} subcategories")
             
+            # If no subcategories found, try scrolling to load dynamic content
+            if len(subcategories) == 0:
+                logger.info("No subcategories found initially, scrolling to load dynamic content...")
+                await page.evaluate("window.scrollTo(0, 500)")
+                await asyncio.sleep(2)
+                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                await asyncio.sleep(3)
+                
+                # Try again after scrolling
+                subcategory_links = await page.evaluate("""
+                    () => {
+                        const links = Array.from(document.querySelectorAll('a[href*="categoryId"], a[href*="/mens-"], a[href*="/womens-"]'));
+                        const subcats = [];
+                        const seen = new Set();
+                        
+                        for (const link of links) {
+                            const href = link.href || link.getAttribute('href') || '';
+                            if (href && !seen.has(href)) {
+                                seen.add(href);
+                                try {
+                                    const url = new URL(href, window.location.origin);
+                                    const categoryId = url.searchParams.get('categoryId');
+                                    if (categoryId || href.match(/\\/(mens|womens)-[^\\/]+/)) {
+                                        subcats.push({
+                                            url: href,
+                                            categoryId: categoryId || '',
+                                            name: (link.textContent || link.innerText || '').trim() || href.split('/').pop()
+                                        });
+                                    }
+                                } catch (e) {}
+                            }
+                        }
+                        return subcats;
+                    }
+                """)
+                subcategories.extend(subcategory_links)
+                logger.info(f"Found {len(subcategories)} subcategories after scrolling")
+            
         except Exception as e:
-            logger.error(f"Error discovering subcategories: {e}")
+            logger.error(f"Error discovering subcategories: {e}", exc_info=True)
         finally:
             await browser.close()
         

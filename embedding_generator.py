@@ -2,7 +2,7 @@
 Image embedding generator using SigLIP model
 """
 import torch
-from transformers import AutoModel, AutoImageProcessor
+from transformers import SiglipModel, SiglipImageProcessor
 from PIL import Image
 import requests
 from io import BytesIO
@@ -27,9 +27,18 @@ class EmbeddingGenerator:
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         logger.info(f"Using device: {self.device}")
         
-        # Use AutoImageProcessor for SigLIP models
-        self.processor = AutoImageProcessor.from_pretrained(model_name)
-        self.model = AutoModel.from_pretrained(model_name)
+        # Use SiglipImageProcessor and SiglipModel for SigLIP models
+        try:
+            self.processor = SiglipImageProcessor.from_pretrained(model_name)
+            self.model = SiglipModel.from_pretrained(model_name)
+        except Exception as e:
+            logger.error(f"Failed to load SigLIP model: {e}")
+            # Fallback: try AutoModel/AutoImageProcessor
+            logger.warning("Trying fallback with AutoModel...")
+            from transformers import AutoModel, AutoImageProcessor
+            self.processor = AutoImageProcessor.from_pretrained(model_name)
+            self.model = AutoModel.from_pretrained(model_name)
+        
         self.model.to(self.device)
         self.model.eval()
         
