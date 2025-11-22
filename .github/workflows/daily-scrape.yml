@@ -1,123 +1,58 @@
-name: Daily Fashion Product Scrape
+name: Daily Abercrombie & Fitch Scraper
 
 on:
-  # Run daily at midnight UTC
   schedule:
+    # Run daily at midnight UTC (adjust timezone as needed)
     - cron: '0 0 * * *'
-
-  # Allow manual trigger
-  workflow_dispatch:
-    inputs:
-      max_products:
-        description: 'Maximum products to scrape (leave empty for all products)'
-        required: false
-        default: ''
-        type: string
-      dry_run:
-        description: 'Run in dry-run mode (no database writes)'
-        required: false
-        default: false
-        type: boolean
-
-env:
-  PYTHON_VERSION: '3.11'
+  workflow_dispatch:  # Allow manual trigger
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
-
-    # Set timeout to prevent hanging (increased for full product scraping)
-    timeout-minutes: 120
-
+    timeout-minutes: 120  # 2 hour timeout for large scraping jobs
+    
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1-mesa-glx libglib2.0-0
+      
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Install Playwright browsers
+        run: |
+          playwright install chromium
+          playwright install-deps chromium
+      
+      - name: Set up Supabase credentials
+        env:
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          echo "SUPABASE_KEY=${{ secrets.SUPABASE_KEY }}" >> $GITHUB_ENV
+      
+      - name: Run scraper
+        env:
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          python main.py
+      
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: scraper-logs
+          path: scraper.log
+          retention-days: 7
 
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: ${{ env.PYTHON_VERSION }}
-
-    - name: Cache pip dependencies
-      uses: actions/cache@v4
-      with:
-        path: ~/.cache/pip
-        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-        restore-keys: |
-          ${{ runner.os }}-pip-
-
-    - name: Install Python dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-
-    - name: Install Playwright browsers
-      run: playwright install --with-deps chromium
-
-    - name: Create cache directories
-      run: |
-        mkdir -p cache/embeddings
-        mkdir -p logs
-
-    - name: Run basic tests
-      run: python test_basic.py
-
-    - name: Run scraper
-      env:
-        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-        SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
-        MAX_PRODUCTS: ${{ github.event.inputs.max_products }}
-        DRY_RUN: ${{ github.event.inputs.dry_run == true && '--dry-run' || '' }}
-      run: |
-        echo "Starting daily scrape..."
-        echo "Max products: ${MAX_PRODUCTS:-unlimited}"
-        echo "Dry run: ${DRY_RUN:-false}"
-
-        # Run scraper - scrape all products by default
-        if [ -z "$MAX_PRODUCTS" ]; then
-          python main.py $DRY_RUN 2>&1 | tee scrape_log.txt
-        else
-          python main.py --max-products "$MAX_PRODUCTS" $DRY_RUN 2>&1 | tee scrape_log.txt
-        fi
-
-        echo "Scrape completed"
-
-    - name: Generate summary
-      if: always()
-      run: |
-        echo "## 🤖 Daily Scrape Summary" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "**Timestamp:** $(date)" >> $GITHUB_STEP_SUMMARY
-        echo "**Status:** ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
-
-        if [ -f scrape_log.txt ]; then
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Last 20 lines of log:**" >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-          tail -20 scrape_log.txt >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-        fi
-
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "**Configuration:**" >> $GITHUB_STEP_SUMMARY
-        echo "- Max products: ${{ github.event.inputs.max_products || 'unlimited (all products)' }}" >> $GITHUB_STEP_SUMMARY
-        echo "- Dry run: ${{ github.event.inputs.dry_run || 'false' }}" >> $GITHUB_STEP_SUMMARY
-
-    - name: Upload logs
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: scrape-logs-${{ github.run_number }}
-        path: |
-          scrape_log.txt
-          logs/
-        retention-days: 7
-
-    - name: Notify on failure
-      if: failure()
-      run: |
-        echo "## ❌ Daily Scrape Failed" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "The automated daily scrape failed. Check the logs for details." >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "**Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" >> $GITHUB_STEP_SUMMARY
