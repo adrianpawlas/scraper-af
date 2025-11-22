@@ -452,170 +452,71 @@ class APIScraper:
         try:
             if not category_url:
                 category_url = f"{self.base_url}/mens-bottoms--1?categoryId={category_id}"
-            
-            # Set up response listener BEFORE navigation
-            api_responses = []
-            response_received = asyncio.Event()
-            
-            async def handle_response(response):
-                url = response.url
-                # Log all catalog API calls for debugging
-                if '/api/bff/catalog' in url:
-                    logger.debug(f"API call detected: {url[:200]}... Status: {response.status}")
-                    if 'CATEGORY_PAGE_DYNAMIC_DATA_QUERY' in url:
-                        logger.info(f"Found CATEGORY_PAGE_DYNAMIC_DATA_QUERY call!")
-                        logger.info(f"Full URL: {url}")
-                        try:
-                            # Try to get response regardless of status
-                            data = await response.json()
-                            if data and 'data' in data:
-                                api_responses.append(data)
-                                response_received.set()
-                                if response.status == 200:
-                                    logger.info(f"Intercepted API response (status 200)")
-                                else:
-                                    logger.info(f"Intercepted API response (status {response.status}, but has data)")
-                            else:
-                                logger.warning(f"API call returned status {response.status} with no data")
-                                # Log error details
-                                try:
-                                    text = await response.text()
-                                    logger.debug(f"Response text: {text[:500]}")
-                                except:
-                                    pass
-                        except Exception as e:
-                            logger.debug(f"Error processing response: {e}")
-                            # Try to get text anyway
-                            try:
-                                text = await response.text()
-                                logger.debug(f"Response text: {text[:500]}")
-                            except:
-                                pass
-            
-            # Set up listener BEFORE navigation
-            page.on("response", handle_response)
-            
-            # Visit the subcategory page - it will automatically call the API
-            logger.info(f"Visiting {category_url} to trigger API call...")
+
+            # Visit the subcategory page first to establish session/cookies
+            logger.info(f"Visiting {category_url} to establish session...")
             await page.goto(category_url, wait_until="load", timeout=60000)
-            await asyncio.sleep(5)  # Wait for page to initialize
-            
-            # Wait for API call with a longer timeout
-            logger.info("Waiting for API call to complete...")
-            try:
-                await asyncio.wait_for(response_received.wait(), timeout=15)
-                logger.info("API response received!")
-            except asyncio.TimeoutError:
-                logger.warning("Timeout waiting for API response")
-            
-            # Also wait a bit more in case response comes late
-            await asyncio.sleep(3)
-            
-            # Scroll to trigger lazy loading (might trigger additional API calls)
-            await page.evaluate("window.scrollTo(0, 500)")
-            await asyncio.sleep(2)
-            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            await asyncio.sleep(3)
-            
-            # Wait for networkidle
-            try:
-                await page.wait_for_load_state("networkidle", timeout=15000)
-            except:
-                pass
-            
-            logger.info(f"Total API responses intercepted: {len(api_responses)}")
-            
+            await asyncio.sleep(3)  # Wait for page to initialize
+
             all_products = []
-            
-            # Use intercepted response for first page
-            if api_responses:
-                logger.info(f"Using intercepted API response for page 1")
-                api_response = api_responses[0]
-                products = self.extract_products_from_response(api_response)
-                all_products.extend(products)
-                logger.info(f"Page 1: Found {len(products)} products")
-            else:
-                logger.warning("No API response intercepted, trying to fetch API using browser's fetch API...")
-                # Try using browser's fetch API (has all cookies/context)
-                try:
-                    api_url = self.build_api_url(category_id, 0, 90)
-                    logger.info("Fetching API using browser's fetch API...")
-                    
-                    # Use page.evaluate to call fetch from browser context
-                    api_response = await page.evaluate(f"""
-                        async () => {{
-                            try {{
-                                const response = await fetch(`{api_url}`, {{
-                                    method: 'GET',
-                                    headers: {{
-                                        'Accept': 'application/json',
-                                    }},
-                                    credentials: 'include'
-                                }});
-                                if (response.ok) {{
-                                    return await response.json();
-                                }} else {{
-                                    console.log('Response status:', response.status);
-                                    const text = await response.text();
-                                    console.log('Response text:', text.substring(0, 200));
+
+            # Try using browser's fetch API directly with the working URL pattern
+            try:
+                api_url = self.build_api_url(category_id, 0, 90)
+                logger.info(f"Fetching API using browser's fetch API...")
+                logger.info(f"API URL: {api_url}")
+
+                # Use page.evaluate to call fetch from browser context
+                api_response = await page.evaluate(f"""
+                    async () => {{
+                        try {{
+                            const response = await fetch(`{api_url}`, {{
+                                method: 'GET',
+                                headers: {{
+                                    'Accept': 'application/json',
+                                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                                }},
+                                credentials: 'include'
+                            }});
+                            if (response.ok) {{
+                                const text = await response.text();
+                                try {{
+                                    return JSON.parse(text);
+                                }} catch (e) {{
+                                    console.log('JSON parse error:', e);
+                                    console.log('Response text:', text.substring(0, 500));
                                     return null;
                                 }}
-                            }} catch (e) {{
-                                console.log('Fetch error:', e);
+                            }} else {{
+                                console.log('Response status:', response.status);
+                                const text = await response.text();
+                                console.log('Response text:', text.substring(0, 200));
                                 return null;
                             }}
+                        }} catch (e) {{
+                            console.log('Fetch error:', e);
+                            return null;
                         }}
-                    """)
-                    
-                    if api_response and 'data' in api_response:
-                        products = self.extract_products_from_response(api_response)
-                        all_products.extend(products)
-                        logger.info(f"Page 1: Found {len(products)} products using browser fetch")
-                    else:
-                        logger.warning("Browser fetch returned invalid response, trying direct navigation...")
-                        # Try navigating directly to API URL (like opening it in browser)
-                        try:
-                            api_url = self.build_api_url(category_id, 0, 90)
-                            logger.info("Navigating directly to API URL to get JSON...")
-                            api_page = await browser.new_page()
-                            await api_page.goto(api_url, wait_until="load", timeout=30000)
-                            await asyncio.sleep(2)
-                            
-                            # Extract JSON from page body (browser displays JSON directly)
-                            api_response = await api_page.evaluate("""
-                                () => {
-                                    try {
-                                        const text = document.body.innerText || document.body.textContent;
-                                        return JSON.parse(text);
-                                    } catch (e) {
-                                        // Try getting from response
-                                        return null;
-                                    }
-                                }
-                            """)
-                            
-                            if api_response and 'data' in api_response:
-                                products = self.extract_products_from_response(api_response)
-                                all_products.extend(products)
-                                logger.info(f"Page 1: Found {len(products)} products from direct API navigation")
-                            else:
-                                logger.warning("Direct navigation also failed")
-                            
-                            await api_page.close()
-                        except Exception as e:
-                            logger.error(f"Direct navigation failed: {e}")
-                            # Last fallback: try manual fetch with page.request
-                            api_response = await self.fetch_category_data(page, category_id, 0, 90)
-                            if api_response:
-                                products = self.extract_products_from_response(api_response)
-                                all_products.extend(products)
-                except Exception as e:
-                    logger.error(f"Browser fetch failed: {e}")
-                    # Last fallback: try manual fetch
-                    api_response = await self.fetch_category_data(page, category_id, 0, 90)
-                    if api_response:
-                        products = self.extract_products_from_response(api_response)
-                        all_products.extend(products)
+                    }}
+                """)
+
+                if api_response and 'data' in api_response:
+                    products = self.extract_products_from_response(api_response)
+                    all_products.extend(products)
+                    logger.info(f"Page 1: Found {len(products)} products using browser fetch")
+                else:
+                    logger.warning("Browser fetch returned invalid response, trying fallback...")
+
+            except Exception as e:
+                logger.error(f"Browser fetch failed: {e}")
+
+            # If no products found, try the fallback method
+            if not all_products:
+                logger.warning("All fetch methods failed, trying requests fallback...")
+                api_response = await self.fetch_category_data(page, category_id, 0, 90)
+                if api_response:
+                    products = self.extract_products_from_response(api_response)
+                    all_products.extend(products)
             
             # Fetch additional pages
             if max_pages is None or max_pages > 1:
