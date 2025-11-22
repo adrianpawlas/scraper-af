@@ -1,0 +1,42 @@
+brand:
+  name: "Abercrombie & Fitch"
+  source: "abercrombie_fitch"
+  base_url: "https://www.abercrombie.com"
+  category_url: "https://www.abercrombie.com/shop/eu/mens"
+  currency: "EUR"
+  gender: "men"
+  second_hand: false
+
+scraping:
+  max_concurrent_pages: 3
+  request_delay: 2  # seconds between requests
+  max_retries: 3
+  timeout: 30000  # milliseconds
+
+  selectors:
+    product_grid: "[data-testid='product-grid']"
+    product_card: "[data-testid='product-card']"
+    product_link: "a[href*='/p/']"
+    product_title: "[data-testid='product-title']"
+    product_price: "[data-testid='product-price']"
+    product_image: "img[data-testid='product-image']"
+
+  pagination:
+    next_button: "[data-testid='pagination-next']"
+    load_more_button: "[data-testid='load-more-button']"
+    items_per_page: 24
+
+database:
+  table_name: "products"
+  batch_size: 10
+
+embeddings:
+  model_name: "google/siglip-base-patch16-384"
+  dimensions: 768
+  device: "auto"  # auto, cpu, cuda
+  cache_dir: "./cache/embeddings"
+
+logging:
+  level: "INFO"
+  format: "%(time)s | %(level)s | %(name)s | %(message)s"
+  file: "logs/scraper.log"
