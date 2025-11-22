@@ -19,12 +19,6 @@ on:
         default: true
         type: boolean
 
-  # Run on pushes to main branch (optional, for testing)
-  push:
-    branches: [ main, master ]
-    paths:
-      - '.github/workflows/daily-scrape.yml'
-
 env:
   PYTHON_VERSION: '3.11'
 
