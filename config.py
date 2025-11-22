@@ -35,6 +35,6 @@ RETRY_ATTEMPTS = 3
 RETRY_DELAY = 2  # seconds
 
 # Browser Settings
-HEADLESS = True  # Set to False for local debugging
+HEADLESS = False  # Set to False for local debugging
 BROWSER_TIMEOUT = 30000  # milliseconds
 

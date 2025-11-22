@@ -1,4 +1,4 @@
-name: Daily Abercrombie & Fitch Scraper
+name: Abercrombie & Fitch Scraper
 
 on:
   schedule:
